@@ -12,15 +12,15 @@ Here's a sample code to use this go-pubsub.
 broker := pubsub.NewBroker()
 
 // Create a new topic (and also get auto-subscribed)
-var maxSub uint16 = 3
-topic := broker.NewTopic("topic-name", &maxSub)
+topic := broker.NewTopic("topic-name", 10)
 
 // Publish new messages to topic
 topic.Publish([]("Hello World!"))
 
-// Get a new topic and subscribe to it 
+// Get a new topic and subscribe to it. Returns the id and channel
+// to listen to published messages.  
 t := broker.Topic("topic-name")
-id, err := t.Subscribe()
+id, ch, err := t.Subscribe()
 
 // Unsubscribe using subscriber id
 err := topic.Unsubscribe(id)
