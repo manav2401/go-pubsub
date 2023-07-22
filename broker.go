@@ -10,13 +10,13 @@ import (
 // defaults
 var (
 	// Maximum topics handled by a broker
-	MaxTopics uint16 = 10
+	MaxTopics uint64 = 10
 
 	// Maximum publishers handled by a topic
-	MaxPublishers uint16 = 10
+	MaxPublishers uint64 = 10
 
 	// Maximum subscribers handled by a topic
-	MaxSubscribers uint16 = 10
+	MaxSubscribers uint64 = 10
 
 	// Maximum topic channel buffer
 	MaxChannelLength uint64 = 100
@@ -44,25 +44,25 @@ type Broker struct {
 }
 
 type Topic struct {
-	lock           sync.Mutex // lock
-	Name           string     // Name of the topic
-	MaxPublishers  uint16     // MaxPublishers allowed in the topic
-	MaxSubscribers uint16     // MaxSubscribers allowed in the topic
+	lock           sync.Mutex // topic level lock
+	name           string     // Name of the topic
+	maxPublishers  uint64     // MaxPublishers allowed in the topic
+	maxSubscribers uint64     // MaxSubscribers allowed in the topic
 }
 
 type Publisher struct {
-	id      uint64       // publisher id
-	pubChan chan Message // publisher channel
-	done    chan bool    // End channel
+	id      uint64             // publisher id
+	pubChan chan PubSubMessage // publisher channel
+	done    chan bool          // End channel
 }
 
 type Subscriber struct {
-	id      uint64       // subscriber id
-	subChan chan Message // subscriber channel
-	done    chan bool    // End channel
+	id      uint64             // subscriber id
+	subChan chan PubSubMessage // subscriber channel
+	done    chan bool          // End channel
 }
 
-type Message struct {
+type PubSubMessage struct {
 	Id  uint64 // id of the sender
 	Msg []byte // message itself
 }
@@ -71,9 +71,7 @@ type Message struct {
 func New() *Broker {
 	publishers = make(map[string]map[uint64]*Publisher)
 	subscribers = make(map[string]map[uint64]*Subscriber)
-	b := &Broker{topics: make(map[string]*Topic)}
-	// msg := Message{id: uint64(1), msg: []byte("Hello")}
-	return b
+	return &Broker{topics: make(map[string]*Topic)}
 }
 
 // GetTopic by name
@@ -81,14 +79,12 @@ func (b *Broker) Topic(name string) *Topic {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
-	if topic, ok := b.topics[name]; ok {
-		return topic
-	}
-	return nil
+	return b.topics[name]
 }
 
-// NewTopic creates a new Topic given the topic name and max subscribers
-func (b *Broker) NewTopic(name string, maxPub *uint16, maxSub *uint16) (*Topic, uint64, error) {
+// NewTopic creates a new topic given the name and max possible
+// publishers and subscribers. Sets to default if 0 is passed.
+func (b *Broker) NewTopic(name string, maxPub uint64, maxSub uint64) (*Topic, uint64, error) {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
@@ -100,18 +96,19 @@ func (b *Broker) NewTopic(name string, maxPub *uint16, maxSub *uint16) (*Topic, 
 		return nil, 0, errDupliacteTopicName
 	}
 
-	if maxPub == nil {
-		maxPub = &MaxPublishers
+	if maxPub == 0 {
+		maxPub = MaxPublishers
 	}
-	if maxSub == nil {
-		maxSub = &MaxSubscribers
+
+	if maxSub == 0 {
+		maxSub = MaxSubscribers
 	}
 
 	// Create a new topic
 	topic := &Topic{
-		Name:           name,
-		MaxPublishers:  *maxPub,
-		MaxSubscribers: *maxSub,
+		name:           name,
+		maxPublishers:  maxPub,
+		maxSubscribers: maxSub,
 	}
 
 	publishers[name] = make(map[uint64]*Publisher)
@@ -126,13 +123,13 @@ func (b *Broker) NewTopic(name string, maxPub *uint16, maxSub *uint16) (*Topic, 
 	return topic, id, nil
 }
 
-// Join a specific topic as a publisher
+// Join a specific topic as a publisher. Returns an ID back.
 func (t *Topic) Join() (uint64, error) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
 	// check if we can accomodate a new publisher
-	if len(publishers[t.Name]) == int(t.MaxPublishers) {
+	if len(publishers[t.name]) == int(t.maxPublishers) {
 		return 0, errPublisherOverflow
 	}
 
@@ -143,16 +140,16 @@ func (t *Topic) Join() (uint64, error) {
 		if id == 0 {
 			continue
 		}
-		if _, ok := publishers[t.Name][id]; ok {
+		if _, ok := publishers[t.name][id]; ok {
 			continue
 		}
 		break
 	}
 
 	// set the publisher
-	publishers[t.Name][id] = &Publisher{
+	publishers[t.name][id] = &Publisher{
 		id:      id,
-		pubChan: make(chan Message, MaxChannelLength),
+		pubChan: make(chan PubSubMessage, MaxChannelLength),
 		done:    make(chan bool, 1),
 	}
 
@@ -168,8 +165,8 @@ func (t *Topic) Leave(id uint64) error {
 	defer t.lock.Unlock()
 
 	// check publisher validity
-	pub, ok := publishers[t.Name][id]
-	if !ok || id != pub.id {
+	pub, ok := publishers[t.name][id]
+	if !ok {
 		return errInvalidId
 	}
 
@@ -178,20 +175,20 @@ func (t *Topic) Leave(id uint64) error {
 
 	// close and clear publisher
 	pub.Close()
-	delete(publishers[t.Name], id)
+	delete(publishers[t.name], id)
 
 	return nil
 }
 
 // Publish publishes a message to a topic.
-func (t *Topic) Publish(msg Message) error {
+func (t *Topic) Publish(msg PubSubMessage) error {
 	// check if message is sent by publisher or not
-	if _, ok := publishers[t.Name][msg.Id]; !ok {
+	if _, ok := publishers[t.name][msg.Id]; !ok {
 		return errInvalidId
 	}
 
 	// send message to corresponding publisher channel
-	publishers[t.Name][msg.Id].pubChan <- msg
+	publishers[t.name][msg.Id].pubChan <- msg
 
 	return nil
 }
@@ -202,7 +199,7 @@ func (t *Topic) Subscribe() (uint64, error) {
 	defer t.lock.Unlock()
 
 	// check if we can accomodate a new subscriber
-	if len(subscribers[t.Name]) == int(t.MaxSubscribers) {
+	if len(subscribers[t.name]) == int(t.maxSubscribers) {
 		return 0, errSubscriberOverflow
 	}
 
@@ -213,16 +210,16 @@ func (t *Topic) Subscribe() (uint64, error) {
 		if id == 0 {
 			continue
 		}
-		if _, ok := subscribers[t.Name][id]; ok {
+		if _, ok := subscribers[t.name][id]; ok {
 			continue
 		}
 		break
 	}
 
 	// add a new subscriber
-	subscribers[t.Name][id] = &Subscriber{
+	subscribers[t.name][id] = &Subscriber{
 		id:      id,
-		subChan: make(chan Message, MaxChannelLength),
+		subChan: make(chan PubSubMessage, MaxChannelLength),
 		done:    make(chan bool, 1),
 	}
 
@@ -238,7 +235,7 @@ func (t *Topic) Unsubscribe(id uint64) error {
 	defer t.lock.Unlock()
 
 	// check subscriber validity
-	sub, ok := subscribers[t.Name][id]
+	sub, ok := subscribers[t.name][id]
 	if !ok || id != sub.id {
 		return errInvalidId
 	}
@@ -250,7 +247,7 @@ func (t *Topic) Unsubscribe(id uint64) error {
 	sub.Close()
 
 	// remove from subscribers
-	delete(subscribers[t.Name], id)
+	delete(subscribers[t.name], id)
 
 	return nil
 }
@@ -259,12 +256,12 @@ func (t *Topic) Unsubscribe(id uint64) error {
 func (t *Topic) listenPub(id uint64) {
 	for {
 		select {
-		case msg := <-publishers[t.Name][id].pubChan:
+		case msg := <-publishers[t.name][id].pubChan:
 			// send message to subscribers
-			for _, v := range subscribers[t.Name] {
+			for _, v := range subscribers[t.name] {
 				v.subChan <- msg
 			}
-		case <-publishers[t.Name][id].done:
+		case <-publishers[t.name][id].done:
 			return
 		}
 	}
@@ -274,9 +271,9 @@ func (t *Topic) listenPub(id uint64) {
 func (t *Topic) listenSub(id uint64) {
 	for {
 		select {
-		case msg := <-subscribers[t.Name][id].subChan:
-			log.Print("[", id, "] Message received from=", msg.Id, " in topic=", t.Name, ", msg=", string(msg.Msg))
-		case <-subscribers[t.Name][id].done:
+		case msg := <-subscribers[t.name][id].subChan:
+			log.Print("[", id, "] Message received from=", msg.Id, " in topic=", t.name, ", msg=", string(msg.Msg))
+		case <-subscribers[t.name][id].done:
 			return
 		}
 	}
@@ -300,23 +297,23 @@ func (b *Broker) Close(topic *Topic) {
 	defer b.lock.Unlock()
 
 	// remove from publishers
-	if _, ok := publishers[topic.Name]; ok {
-		for _, pub := range publishers[topic.Name] {
+	if _, ok := publishers[topic.name]; ok {
+		for _, pub := range publishers[topic.name] {
 			pub.Close()
 		}
-		delete(publishers, topic.Name)
+		delete(publishers, topic.name)
 	}
 
 	// remove from subscribers
-	if _, ok := subscribers[topic.Name]; ok {
-		for _, sub := range subscribers[topic.Name] {
+	if _, ok := subscribers[topic.name]; ok {
+		for _, sub := range subscribers[topic.name] {
 			sub.Close()
 		}
-		delete(subscribers, topic.Name)
+		delete(subscribers, topic.name)
 	}
 
 	// remove from broker
-	delete(b.topics, topic.Name)
+	delete(b.topics, topic.name)
 }
 
 // End the broker service.
