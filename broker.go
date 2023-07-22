@@ -194,13 +194,13 @@ func (t *Topic) Publish(msg PubSubMessage) error {
 }
 
 // Subscribe to a topic for receiving messages.
-func (t *Topic) Subscribe() (uint64, error) {
+func (t *Topic) Subscribe() (uint64, chan PubSubMessage, error) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
 	// check if we can accomodate a new subscriber
 	if len(subscribers[t.name]) == int(t.maxSubscribers) {
-		return 0, errSubscriberOverflow
+		return 0, nil, errSubscriberOverflow
 	}
 
 	var id uint64
@@ -217,16 +217,17 @@ func (t *Topic) Subscribe() (uint64, error) {
 	}
 
 	// add a new subscriber
-	subscribers[t.name][id] = &Subscriber{
+	sub := &Subscriber{
 		id:      id,
 		subChan: make(chan PubSubMessage, MaxChannelLength),
 		done:    make(chan bool, 1),
 	}
+	subscribers[t.name][id] = sub
 
-	// listen for incoming messages
-	go t.listenSub(id)
+	// listen for incoming messages (only for debugging purpose)
+	// go t.listenSub(id)
 
-	return id, nil
+	return id, sub.subChan, nil
 }
 
 // Unsubscribe to a topic for receiving messages.
@@ -267,7 +268,7 @@ func (t *Topic) listenPub(id uint64) {
 	}
 }
 
-// listenSub listens to messages for subscribers
+// listenSub listens to messages for subscribers. For debugging purpose.
 func (t *Topic) listenSub(id uint64) {
 	for {
 		select {

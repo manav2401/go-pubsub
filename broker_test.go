@@ -16,38 +16,50 @@ func TestBrokerBasic(t *testing.T) {
 	}
 
 	// create subscribers
-	var subscribers []uint64
-	var count uint16 = 3
-	for i := 0; i < int(count); i++ {
-		id, err := topic.Subscribe()
+	subscribers := make([]uint64, 3)
+	for i := 0; i < 3; i++ {
+		id, ch, err := topic.Subscribe()
 		if err != nil {
 			t.Errorf("error in subscribing to topic: %s", err)
 		}
-		subscribers = append(subscribers, id)
+
+		subscribers[i] = id
+
+		// Keep listening in bg
+		go func(i int, ch chan PubSubMessage) {
+			for {
+				select {
+				case msg := <-ch:
+					t.Logf("[%d]: Message received from=%d in topic=%s - msg: %s\n", id, msg.Id, topic.name, string(msg.Msg))
+					return
+				case <-time.After(2 * time.Second):
+					t.Logf("[%d]: Timeout, index=%d\n", id, i)
+					return
+				}
+			}
+		}(i, ch)
 	}
 
 	// publish message
 	msg := PubSubMessage{Id: id, Msg: []byte("Hello world from producer")}
-	t.Log("[", msg.Id, "] Publishing message to topic=", topic.name, ", msg=", string(msg.Msg))
+	t.Logf("[%d]: Publishing message to topic=%s - msg: %s\n", msg.Id, topic.name, string(msg.Msg))
 	topic.Publish(msg)
-
-	time.Sleep(1 * time.Second)
-
-	err = topic.Unsubscribe(subscribers[len(subscribers)-1])
-	if err != nil {
-		t.Errorf("error in unsubscribing topic: %s", err)
-	}
 
 	id2, err := topic.Join()
 	if err != nil {
 		t.Errorf("error in joining producer: %s", err)
 	}
 	msg2 := PubSubMessage{Id: id2, Msg: []byte("Bye from another producer")}
-	t.Log("[", msg2.Id, "] Publishing message to topic=", topic.name, ", msg=", string(msg2.Msg))
+	t.Logf("[%d]: Publishing message to topic=%s - msg: %s\n", msg2.Id, topic.name, string(msg2.Msg))
 	topic.Publish(msg2)
 
-	time.Sleep(1 * time.Second)
+	// Unsubscribe all
+	for i := 0; i < len(subscribers); i++ {
+		err := topic.Unsubscribe(subscribers[i])
+		if err != nil {
+			t.Errorf("error in unsubscribing topic: %s", err)
+		}
+	}
 
 	broker.End()
-	t.Log("Ending simulation")
 }
